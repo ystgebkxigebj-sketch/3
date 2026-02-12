@@ -19,16 +19,15 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           netsh advfirewall firewall add rule name="Allow-RDP" dir=in action=allow protocol=TCP localport=3389
 
-      - name: 3. Configure Firefox Extensions + Autoconfig
+      - name: 3. Configure Extensions Policy
         run: |
           $firefoxDir = "C:\Program Files\Mozilla Firefox"
           $distDir = "$firefoxDir\distribution"
           if (!(Test-Path $distDir)) { New-Item -ItemType Directory -Force -Path $distDir }
 
-          # Extensions - only need ublock and multi-account containers now
           $extensions = @(
               "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi",
-              "https://addons.mozilla.org/firefox/downloads/latest/multi-account-containers/latest.xpi"
+              "https://addons.mozilla.org/firefox/downloads/latest/violentmonkey/latest.xpi"
           )
 
           $policies = @{
@@ -39,92 +38,12 @@ jobs:
               }
           }
           $policies | ConvertTo-Json -Depth 4 | Out-File "$distDir\policies.json" -Encoding UTF8
-
-          # --- AUTOCONFIG: Inject userscript on gartic.io without Tampermonkey ---
-          
-          # Step A: Create autoconfig.js in Firefox defaults/pref
-          $prefsDir = "$firefoxDir\defaults\pref"
-          if (!(Test-Path $prefsDir)) { New-Item -ItemType Directory -Force -Path $prefsDir }
-          
-          $autoconfigJS = 'pref("general.config.filename", "gartic-autoconfig.cfg");' + "`r`n" + 'pref("general.config.obscure_value", 0);'
-          [System.IO.File]::WriteAllText("$prefsDir\autoconfig.js", $autoconfigJS, [System.Text.Encoding]::ASCII)
-          Write-Host "autoconfig.js created"
-
-          # Step B: Create the actual autoconfig .cfg file in Firefox root
-          # This injects the userscript into every gartic.io page
-          $cfgContent = @'
-          // Skip first line (required by Firefox autoconfig)
-          try {
-            let start = Components.classes["@mozilla.org/embedcomp/window-watcher;1"].getService(Components.interfaces.nsIWindowWatcher);
-            start.registerNotification({
-              observe: function(subject, topic, data) {
-                if (topic === "domwindowopened") {
-                  subject.addEventListener("load", function() {
-                    let browser = subject.gBrowser;
-                    if (!browser) return;
-                    
-                    browser.addEventListener("DOMContentLoaded", function(e) {
-                      let doc = e.target;
-                      let win = doc.defaultView;
-                      if (!win || !doc.location) return;
-                      let url = doc.location.href || "";
-                      
-                      if (url.includes("gartic.io")) {
-                        let script = doc.createElement("script");
-                        script.textContent = `
-                          (function () {
-                            if (window._garticTokenRunning) return;
-                            window._garticTokenRunning = true;
-                            
-                            const TOKEN_INTERVAL = 4000;
-                            const NUM_IFRAMES = 6;
-                            const BACKEND_URL = 'https://moonfive.alwaysdata.net/add-token';
-                            
-                            setInterval(() => { location.reload(); }, 30000);
-                            
-                            function sendToken(token) {
-                              if (typeof token !== 'string' || token.length <= 20) return;
-                              fetch(BACKEND_URL, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ token: token })
-                              }).catch(() => {});
-                            }
-                            
-                            window.addEventListener('message', function(event) {
-                              if (event.data && typeof event.data === 'string') {
-                                sendToken(event.data);
-                              }
-                            });
-                            
-                            for (let i = 0; i < NUM_IFRAMES; i++) {
-                              const iframe = document.createElement('iframe');
-                              iframe.style.display = 'none';
-                              iframe.sandbox = 'allow-scripts allow-same-origin';
-                              document.body.appendChild(iframe);
-                              iframe.srcdoc = '<!DOCTYPE html><html><head><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer><\\/script></head><body><div id="cf-turnstile"></div><script>function requestToken(){try{window.turnstile.render(String.fromCharCode(35)+"cf-turnstile",{sitekey:"0x4AAAAAABBPKaIbNwnPEfSo",callback:function(token){parent.postMessage(token,"*")}});}catch(e){}}setInterval(requestToken,' + TOKEN_INTERVAL + ');setTimeout(requestToken,200);<\\/script></body></html>';
-                            }
-                          })();
-                        `;
-                        doc.body.appendChild(script);
-                      }
-                    }, true);
-                  }, {once: true});
-                }
-              }
-            });
-          } catch(e) {}
-          '@
-
-          [System.IO.File]::WriteAllText("$firefoxDir\gartic-autoconfig.cfg", $cfgContent, [System.Text.Encoding]::ASCII)
-          Write-Host "gartic-autoconfig.cfg created"
-          Write-Host "Userscript will auto-inject on gartic.io - NO Tampermonkey needed!"
+          Write-Host "Extension policy set."
 
       - name: 4. Create RDP User
         run: |
           $password = "Start@123456"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          
           New-LocalUser -Name "YOU" -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member "YOU"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "YOU"
@@ -136,125 +55,150 @@ jobs:
           Start-Process "$env:TEMP\tailscale.exe" -ArgumentList "/quiet", "/norestart" -Wait
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gartic-max-ram
 
-      - name: 6. Initialize Firefox Profile + Create Desktop Launcher
+      - name: 6. Create 3 Firefox Profiles + Install Userscript
         run: |
           $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
           echo "::notice title=RDP CONNECT INFO::IP: $ip | User: YOU | Pass: Start@123456"
 
           $firefox = "C:\Program Files\Mozilla Firefox\firefox.exe"
 
-          # Initialize Firefox profile so extensions install
-          Write-Host "Initializing Firefox profile..."
-          $proc = Start-Process $firefox -ArgumentList "-headless" -PassThru
-          Start-Sleep -Seconds 25
-          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 5
-          Write-Host "Firefox profile initialized."
-
-          # Find the profile path
-          $profilesDir = [System.IO.Path]::Combine($env:APPDATA, "Mozilla", "Firefox", "Profiles")
-          $profilePath = $null
-          if (Test-Path $profilesDir) {
-              $profilePath = (Get-ChildItem $profilesDir -Directory | Select-Object -First 1).FullName
-              Write-Host "Profile found: $profilePath"
-          }
-
-          # Pre-configure Multi-Account Containers with 3 containers
-          if ($profilePath) {
-              $containersJson = @'
-          {
-            "version": 5,
-            "lastUserContextId": 3,
-            "identities": [
-              {
-                "userContextId": 1,
-                "public": true,
-                "icon": "fingerprint",
-                "color": "blue",
-                "l10nID": "userContextPersonal.label",
-                "accessKey": "userContextPersonal.accesskey",
-                "telemetryId": 1,
-                "name": "Token-1"
-              },
-              {
-                "userContextId": 2,
-                "public": true,
-                "icon": "briefcase",
-                "color": "orange",
-                "l10nID": "userContextWork.label",
-                "accessKey": "userContextWork.accesskey",
-                "telemetryId": 2,
-                "name": "Token-2"
-              },
-              {
-                "userContextId": 3,
-                "public": true,
-                "icon": "dollar",
-                "color": "green",
-                "l10nID": "userContextBanking.label",
-                "accessKey": "userContextBanking.accesskey",
-                "telemetryId": 3,
-                "name": "Token-3"
+          # Save the userscript
+          $userscript = @'
+          // ==UserScript==
+          // @name         Gartic.io Token Fetcher (RDP Auto)
+          // @namespace    http://tampermonkey.net/
+          // @version      3.0
+          // @description  Fetch maximum tokens from Turnstile with auto reload
+          // @author       You
+          // @match        *://gartic.io/*
+          // @match        *://*.gartic.io/*
+          // @grant        none
+          // ==/UserScript==
+          (function () {
+              'use strict';
+              const TOKEN_INTERVAL = 4000;
+              const NUM_IFRAMES = 6;
+              const BACKEND_URL = 'https://moonfive.alwaysdata.net/add-token';
+              setInterval(() => { location.reload(); }, 30000);
+              function sendToken(token) {
+                  if (typeof token !== 'string' || token.length <= 20) return;
+                  fetch(BACKEND_URL, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ token })
+                  }).catch(() => {});
               }
-            ]
-          }
+              function createTurnstileFrames() {
+                  window.addEventListener('message', function(event) {
+                      if (event.data && typeof event.data === 'string') {
+                          sendToken(event.data);
+                      }
+                  });
+                  for (let i = 0; i < NUM_IFRAMES; i++) {
+                      const iframe = document.createElement('iframe');
+                      iframe.style.display = 'none';
+                      iframe.sandbox = 'allow-scripts allow-same-origin';
+                      document.body.appendChild(iframe);
+                      iframe.srcdoc = '<!DOCTYPE html><html><head><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer><\/script></head><body><div id="cf-turnstile"></div><script>function requestToken(){try{window.turnstile.render("#cf-turnstile",{sitekey:"0x4AAAAAABBPKaIbNwnPEfSo",callback:function(token){parent.postMessage(token,"*")}});}catch(e){}}setInterval(requestToken,4000);setTimeout(requestToken,200);<\/script></body></html>';
+                  }
+              }
+              createTurnstileFrames();
+          })();
           '@
-              $containersJson | Out-File "$profilePath\containers.json" -Encoding UTF8
-              Write-Host "containers.json created with 3 containers"
+          $userscript | Out-File "C:\gartic.user.js" -Encoding UTF8
+          Write-Host "Userscript saved to C:\gartic.user.js"
 
-              # Enable container tabs in prefs
-              $prefsFile = "$profilePath\user.js"
-              $prefsContent = @'
-          user_pref("privacy.userContext.enabled", true);
-          user_pref("privacy.userContext.ui.enabled", true);
-          user_pref("privacy.userContext.extension", "containers@mozilla.org");
-          '@
-              $prefsContent | Out-File $prefsFile -Encoding ASCII -Append
-              Write-Host "Container prefs set"
+          # Create 3 separate Firefox profiles
+          $profileNames = @("token1", "token2", "token3")
+
+          foreach ($name in $profileNames) {
+              Write-Host ""
+              Write-Host "Creating profile: $name"
+              
+              # Create the profile
+              Start-Process $firefox -ArgumentList "-CreateProfile", "$name" -Wait
+              Start-Sleep -Seconds 2
+
+              # Launch it headless to initialize extensions
+              Write-Host "  Initializing $name (installing extensions)..."
+              $proc = Start-Process $firefox -ArgumentList "-P", $name, "-headless", "-no-remote" -PassThru
+              Start-Sleep -Seconds 25
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 3
+              Write-Host "  Profile $name initialized."
           }
 
-          # Create START-GARTIC.bat on desktop
+          # Find all profile paths and log them
+          $profilesDir = "$env:APPDATA\Mozilla\Firefox\Profiles"
+          Write-Host ""
+          Write-Host "All profiles:"
+          Get-ChildItem $profilesDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
+
+          # Create START-GARTIC.bat
           $batContent = @'
           @echo off
           title Gartic Token Farm
           color 0A
           echo.
           echo  ========================================
-          echo   GARTIC TOKEN FARM
-          echo   Userscript auto-injects via autoconfig
-          echo   No Tampermonkey needed!
+          echo   GARTIC TOKEN FARM  (3 Profiles)
           echo  ========================================
           echo.
-          echo  Opening 3 gartic.io tabs in containers...
+          echo  Step 1: Installing userscript in each profile...
+          echo  ViolentMonkey will pop up 3 times.
+          echo  Click CONFIRM INSTALLATION each time.
           echo.
 
           set FIREFOX="C:\Program Files\Mozilla Firefox\firefox.exe"
 
-          start "" %FIREFOX% -url "ext+container:name=Token-1&url=https://gartic.io/"
-          timeout /t 2 /nobreak >nul
-          start "" %FIREFOX% -url "ext+container:name=Token-2&url=https://gartic.io/"
-          timeout /t 2 /nobreak >nul
-          start "" %FIREFOX% -url "ext+container:name=Token-3&url=https://gartic.io/"
+          start "" %FIREFOX% -P "token1" -no-remote "file:///C:/gartic.user.js"
+          timeout /t 3 /nobreak >nul
+          start "" %FIREFOX% -P "token2" -no-remote "file:///C:/gartic.user.js"
+          timeout /t 3 /nobreak >nul
+          start "" %FIREFOX% -P "token3" -no-remote "file:///C:/gartic.user.js"
 
           echo.
-          echo  Done! 3 tabs open in separate containers.
-          echo  Userscript auto-runs on each tab.
-          echo  Tokens flow automatically.
+          echo  Click CONFIRM in all 3 ViolentMonkey popups.
+          echo  Then press any key to continue...
+          pause >nul
+
           echo.
-          echo  Each tab reloads every 30 seconds.
-          echo  You can minimize Firefox.
+          echo  Step 2: Opening gartic.io in each profile...
+          echo.
+
+          start "" %FIREFOX% -P "token1" -no-remote "https://gartic.io/"
+          timeout /t 2 /nobreak >nul
+          start "" %FIREFOX% -P "token2" -no-remote "https://gartic.io/"
+          timeout /t 2 /nobreak >nul
+          start "" %FIREFOX% -P "token3" -no-remote "https://gartic.io/"
+
+          echo.
+          echo  ========================================
+          echo   DONE!
+          echo  ========================================
+          echo.
+          echo   3 Firefox windows running.
+          echo   Each has its own profile (isolated cookies).
+          echo   Userscript runs on each.
+          echo   Tokens flow automatically.
+          echo   Each tab reloads every 30 seconds.
+          echo.
+          echo   You can minimize the Firefox windows.
           echo.
           pause
           '@
 
-          $publicDesktop = "C:\Users\Public\Desktop"
-          $batContent | Out-File "$publicDesktop\START-GARTIC.bat" -Encoding ASCII
-          
+          $batContent | Out-File "C:\Users\Public\Desktop\START-GARTIC.bat" -Encoding ASCII
           $youDesktop = "C:\Users\YOU\Desktop"
           if (!(Test-Path $youDesktop)) { New-Item -ItemType Directory -Force -Path $youDesktop }
           $batContent | Out-File "$youDesktop\START-GARTIC.bat" -Encoding ASCII
 
-          Write-Host "START-GARTIC.bat created on desktop!"
-          Write-Host "RDP Ready!"
-          
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "SETUP COMPLETE!"
+          Write-Host "  3 Firefox profiles created: token1, token2, token3"
+          Write-Host "  Userscript at C:\gartic.user.js"
+          Write-Host "  START-GARTIC.bat on desktop"
+          Write-Host "=========================================="
+
           while ($true) { Start-Sleep -Seconds 300 }
