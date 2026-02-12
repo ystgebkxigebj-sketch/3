@@ -57,40 +57,63 @@ jobs:
           Start-Process "$env:TEMP\tailscale.exe" -ArgumentList "/quiet", "/norestart" -Wait
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gartic-max-ram
 
-      - name: 6. Launch Firefox with Userscript + Tabs
+      - name: 6. Create Desktop Launcher + Keep Alive
         run: |
           $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
           echo "::notice title=RDP CONNECT INFO::IP: $ip | User: YOU | Pass: Start@123456"
 
-          $firefox = "C:\Program Files\Mozilla Firefox\firefox.exe"
-          $scriptUrl = "https://github.com/ystgebkxigebj-sketch/1/raw/refs/heads/main/.github/gartic-token.user.js"
+          # Create the bat file on the Public Desktop (visible for ALL users)
+          $batContent = @'
+          @echo off
+          title Gartic Token Launcher
+          color 0A
+          echo.
+          echo  Starting Gartic Token Farm...
+          echo.
 
-          # First launch Firefox to initialize profile + extensions
-          Write-Host "Launching Firefox to initialize..."
-          $proc = Start-Process $firefox -ArgumentList "-headless" -PassThru
-          Start-Sleep -Seconds 20
-          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 5
-          Write-Host "Firefox initialized."
+          set FIREFOX="C:\Program Files\Mozilla Firefox\firefox.exe"
+          set SCRIPT_URL=https://github.com/ystgebkxigebj-sketch/1/raw/refs/heads/main/.github/gartic-token.user.js
 
-          # Now launch Firefox with the userscript URL + gartic tabs
-          # This runs in the SYSTEM session, visible when you RDP in
-          Write-Host "Launching Firefox with tabs..."
-          Start-Process $firefox -ArgumentList "$scriptUrl"
-          Start-Sleep -Seconds 3
-          Start-Process $firefox -ArgumentList "-new-tab", "https://gartic.io/"
-          Start-Sleep -Seconds 1
-          Start-Process $firefox -ArgumentList "-new-tab", "https://gartic.io/"
-          Start-Sleep -Seconds 1
-          Start-Process $firefox -ArgumentList "-new-tab", "https://gartic.io/"
-          Start-Sleep -Seconds 1
-          Start-Process $firefox -ArgumentList "-new-tab", "https://gartic.io/"
-          Start-Sleep -Seconds 1
-          Start-Process $firefox -ArgumentList "-new-tab", "https://gartic.io/"
-          Start-Sleep -Seconds 1
-          Start-Process $firefox -ArgumentList "-new-tab", "https://gartic.io/"
+          echo  [1/3] Opening userscript installer...
+          start "" %FIREFOX% "%SCRIPT_URL%"
+          echo        Tampermonkey will show Install button.
+          echo        CLICK INSTALL then come back here.
+          echo.
+          pause
 
-          Write-Host "Firefox launched with userscript + 6 gartic tabs!"
-          Write-Host "RDP Ready!"
+          echo.
+          echo  [2/3] Opening 6 gartic.io tabs...
+          start "" %FIREFOX% -new-tab "https://gartic.io/"
+          timeout /t 1 >nul
+          start "" %FIREFOX% -new-tab "https://gartic.io/"
+          timeout /t 1 >nul
+          start "" %FIREFOX% -new-tab "https://gartic.io/"
+          timeout /t 1 >nul
+          start "" %FIREFOX% -new-tab "https://gartic.io/"
+          timeout /t 1 >nul
+          start "" %FIREFOX% -new-tab "https://gartic.io/"
+          timeout /t 1 >nul
+          start "" %FIREFOX% -new-tab "https://gartic.io/"
 
+          echo.
+          echo  [3/3] Done! Tokens will start flowing in ~30 seconds.
+          echo.
+          echo  You can minimize this window.
+          pause
+          '@
+
+          # Write to Public Desktop
+          $publicDesktop = "C:\Users\Public\Desktop"
+          $batContent | Out-File "$publicDesktop\START-GARTIC.bat" -Encoding ASCII
+          Write-Host "START-GARTIC.bat created on Public Desktop"
+
+          # Also copy to YOU user desktop (will exist after first login)
+          $youDesktop = "C:\Users\YOU\Desktop"
+          if (!(Test-Path $youDesktop)) { New-Item -ItemType Directory -Force -Path $youDesktop }
+          $batContent | Out-File "$youDesktop\START-GARTIC.bat" -Encoding ASCII
+          Write-Host "START-GARTIC.bat also copied to YOU Desktop"
+
+          Write-Host ""
+          Write-Host "RDP Ready! User double-clicks START-GARTIC.bat on desktop."
+          
           while ($true) { Start-Sleep -Seconds 300 }
